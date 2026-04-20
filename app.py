@@ -37,8 +37,8 @@ demo_video_path = SOURCE_DEMO_VIDEO
 VIDEO_OPTIONS = {
     "Source": SOURCE_DEMO_VIDEO,
     "Detections": DETECTION_DEMO_VIDEO,
-    "SORT": SORT_DEMO_VIDEO,
     "Naive IoU": NAIVE_IOU_DEMO_VIDEO,
+    "SORT": SORT_DEMO_VIDEO,
     "Ground Truth": GROUND_TRUTH_DEMO_VIDEO,
 }
 

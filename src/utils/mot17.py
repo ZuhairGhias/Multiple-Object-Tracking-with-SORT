@@ -18,8 +18,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MOT17_DIR = PROJECT_ROOT / "data" / "MOT17"
 DEFAULT_VIDEO_DIR = PROJECT_ROOT / "data" / "videos" / "temp"
 TRACKING_VIDEO_FILENAMES = {
-    "sort": "tracking_sort.mp4",
     "naive_iou": "tracking_naive_iou.mp4",
+    "sort": "tracking_sort.mp4",
     "mot_ground_truth": "tracking_gt.mp4",
 }
 
@@ -28,8 +28,8 @@ TRACKING_VIDEO_FILENAMES = {
 class MOT17VideoOutputs:
     source_video_path: Path
     detections_video_path: Path
-    tracking_sort_video_path: Path
     tracking_naive_iou_video_path: Path
+    tracking_sort_video_path: Path
     tracking_gt_video_path: Path | None = None
 
 
@@ -92,15 +92,15 @@ def generate_mot17_videos(
     source_video_path = sequence_output_dir / "source.mp4"
     detections_video_path = sequence_output_dir / "detections.mp4"
     tracking_gt_video_path = sequence_output_dir / TRACKING_VIDEO_FILENAMES["mot_ground_truth"]
-    tracking_sort_video_path = sequence_output_dir / TRACKING_VIDEO_FILENAMES["sort"]
     tracking_naive_iou_video_path = sequence_output_dir / TRACKING_VIDEO_FILENAMES["naive_iou"]
+    tracking_sort_video_path = sequence_output_dir / TRACKING_VIDEO_FILENAMES["sort"]
 
     fps = infer_mot17_frame_rate(resolved_sequence_dir)
     detector = MOT17Detector(sequence_id=sequence_id, root_dir=resolved_sequence_dir.parent)
 
     trackers: dict[str, Tracker] = {
-        "sort": SORT(),
         "naive_iou": NaiveIOUTracker(),
+        "sort": SORT(),
     }
     gt_path = resolved_sequence_dir / "gt" / "gt.txt"
     if gt_path.is_file():
@@ -117,8 +117,8 @@ def generate_mot17_videos(
     source_writer = MP4Writer(source_video_path, fps)
     detections_writer = MP4Writer(detections_video_path, fps)
     tracker_output_paths = {
-        "sort": tracking_sort_video_path,
         "naive_iou": tracking_naive_iou_video_path,
+        "sort": tracking_sort_video_path,
         "mot_ground_truth": tracking_gt_video_path,
     }
     tracker_writers = {
@@ -153,8 +153,8 @@ def generate_mot17_videos(
     return MOT17VideoOutputs(
         source_video_path=source_video_path,
         detections_video_path=detections_video_path,
-        tracking_sort_video_path=tracking_sort_video_path,
         tracking_naive_iou_video_path=tracking_naive_iou_video_path,
+        tracking_sort_video_path=tracking_sort_video_path,
         tracking_gt_video_path=tracking_gt_video_path if "mot_ground_truth" in trackers else None,
     )
 
@@ -184,8 +184,8 @@ def main() -> None:
     )
     print(f"source={outputs.source_video_path}")
     print(f"detections={outputs.detections_video_path}")
-    print(f"tracking_sort={outputs.tracking_sort_video_path}")
     print(f"tracking_naive_iou={outputs.tracking_naive_iou_video_path}")
+    print(f"tracking_sort={outputs.tracking_sort_video_path}")
     if outputs.tracking_gt_video_path is not None:
         print(f"tracking_gt={outputs.tracking_gt_video_path}")
 
