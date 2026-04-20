@@ -128,7 +128,7 @@ def build_frame_inspector(*, sequence_id: str) -> None:
     with gr.Accordion("Frame Debugger", open=False):
         gr.Markdown(
             """
-            Step through raw MOT17 frames directly from the local dataset. This is intentionally unannotated for now so we have a clean base layer for detections and tracks later.
+            Step through raw MOT17 frames directly from the local dataset.
             """
         )
         gr.Markdown(

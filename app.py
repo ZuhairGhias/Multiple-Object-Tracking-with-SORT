@@ -138,7 +138,7 @@ with gr.Blocks(title="SORT MOT17 Demo") as demo:
     gr.Markdown(
         """
         # Multiple Object Tracking with SORT
-        This first milestone is a demo-only MOT17 player. The app loads one configured local video and focuses on simple playback before tracking is added.
+        **WIP - Study of the SORT family of object tracking**
         """
     )
     video_option = gr.Radio(
