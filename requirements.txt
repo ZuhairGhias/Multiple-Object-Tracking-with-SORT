@@ -1,5 +1,5 @@
-numpy
-scipy
-opencv-python
-gradio
-filterpy
+gradio==6.12.0
+numpy==2.4.4
+scipy==1.17.1
+opencv-python-headless==4.13.0.92
+filterpy==1.4.5

@@ -1,3 +1,17 @@
+---
+title: Multiple Object Tracking with SORT
+sdk: gradio
+sdk_version: 6.12.0
+app_file: app.py
+python_version: 3.11
+fullWidth: true
+short_description: Interactive SORT demo for MOT17 tracking visualizations.
+tags:
+  - computer-vision
+  - object-tracking
+  - gradio
+---
+
 # Multiple-Object-Tracking-with-SORT
 
 This project implements the SORT (Simple Online and Realtime Tracking) algorithm and provides an interactive demo for visualizing object tracking behavior.
@@ -39,19 +53,6 @@ By default, the script:
 - uses ffmpeg/libx264 for MP4 output when available
 
 For train sequences that include `gt/gt.txt`, the utility also writes `tracking_gt.mp4`. For test sequences, it prints a warning and skips that output.
-
-## Dev Container
-
-This repository includes a VS Code dev container configuration in `.devcontainer/`.
-
-1. Install Docker and the VS Code Dev Containers extension.
-2. Open the repository in VS Code.
-3. Run `Dev Containers: Reopen in Container`.
-
-The container will:
-- use Python 3.11
-- install the Python packages from `requirements.txt`
-- include system libraries commonly needed by `opencv-python`
 
 ## Relevant Papers
 
