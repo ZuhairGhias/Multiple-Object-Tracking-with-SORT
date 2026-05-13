@@ -1,3 +1,5 @@
+"""Project-level MOT metric calculations for framewise tracker outputs."""
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -12,15 +14,21 @@ from src.metrics.matcher import BoxLike, match_by_iou
 
 @dataclass(frozen=True)
 class MOTMetrics:
-    mota: float # Multi-Object Tracking Accuracy. Less ID switches the better. (Tracking centric)
-    motp: float # Multiple-Object Tracking Precision. More BB IoU the better. (Detector centric)
-    idf1: float # F1 scores based on the assumption that the most commonly mapped ID is the TP.
-    faf: float # False Alarms Per Frame
-    mostly_tracked: int # Tracks that we mostly detected. (Detector centric)
-    mostly_lost: int # Tracks that were mostly undetected. (Detector centric)
-    false_positives: int # Unmatched predictions
-    false_negatives: int # Unmatched ground truths
-    id_switches: int # number of times a predicted ID assigned to a GT was different between frames.
+    """Summary counts and ratios produced by :func:`evaluate_mot_metrics`.
+
+    `motp` is reported here as mean IoU over accepted matches. The data model
+    also carries the raw counts needed by CSV reporting and artifact plots.
+    """
+
+    mota: float
+    motp: float
+    idf1: float
+    faf: float
+    mostly_tracked: int
+    mostly_lost: int
+    false_positives: int
+    false_negatives: int
+    id_switches: int
     fragmentations: int
     matches: int
     ground_truth_count: int
@@ -28,6 +36,8 @@ class MOTMetrics:
     frame_count: int
 
     def as_dict(self) -> dict[str, float | int]:
+        """Return stable display/report labels for this metric bundle."""
+
         return {
             "MOTA": self.mota,
             "MOTP": self.motp,
@@ -48,6 +58,8 @@ class MOTMetrics:
 
 @dataclass(frozen=True)
 class FrameAssociation:
+    """One accepted frame-level GT/prediction pairing used for IDF1."""
+
     frame_index: int
     ground_truth_id: int
     prediction_id: int
@@ -61,16 +73,14 @@ def evaluate_mot_metrics(
     iou_threshold: float = 0.5,
     frame_count: int | None = None,
 ) -> MOTMetrics:
+    """Evaluate the project's MOT summary metrics.
+
+    Evaluation is performed frame by frame. Accepted matches come from IoU
+    assignment, then the accumulated matches and misses are used to compute:
+    MOTA, mean-IoU MOTP, IDF1, FAF, MT, ML, FP, FN, ID switches, and
+    fragmentations.
     """
-    Evaluate common MOT scores from ground-truth and predicted tracks.
 
-    Evaluating Multiple Object Tracking Performance: The CLEAR MOT Metrics
-    Paper here:
-    https://scispace.com/pdf/evaluating-multiple-object-tracking-performance-the-clear-tm8230vs80.pdf
-    """
-
-
-    # Group by frame for framewise comparisons
     ground_truth_by_frame = _group_by_frame(ground_truth_tracks)
     predictions_by_frame = _group_by_frame(predicted_tracks)
     frames = _frame_range(
@@ -91,7 +101,7 @@ def evaluate_mot_metrics(
     matched_frames_by_gt: dict[int, set[int]] = defaultdict(set)
     lifespan_frames_by_gt: dict[int, set[int]] = defaultdict(set)
 
-    # Lifespans to calculate mostly tracked/lost
+    # Ground-truth lifespans support MT, ML, and fragmentation calculations.
     for frame_index, ground_truth in ground_truth_by_frame.items():
         for gt in ground_truth:
             lifespan_frames_by_gt[gt.track_id].add(frame_index)
@@ -110,10 +120,6 @@ def evaluate_mot_metrics(
         false_positives += len(predictions) - len(frame_matches)
         false_negatives += len(ground_truth) - len(frame_matches)
 
-        # The main work of calculating ID switches
-        # Essentially figuring out where the matched ID for a predicted box was different
-        #   from the previous frame
-        # TODO: would be nice to visualize the ID switches over time as tracks
         for match in frame_matches:
             gt = ground_truth[match.ground_truth_index]
             prediction = predictions[match.prediction_index]
@@ -175,7 +181,7 @@ def compare_mot_metrics(
     iou_threshold: float = 0.5,
     frame_count: int | None = None,
 ) -> dict[str, MOTMetrics]:
-    """Evaluate multiple tracking techniques against one ground-truth set."""
+    """Evaluate several tracker outputs against the same GT timeline."""
 
     ground_truth = list(ground_truth_tracks)
     return {
@@ -190,6 +196,8 @@ def compare_mot_metrics(
 
 
 def _group_by_frame(tracks: Iterable[BoxLike]) -> dict[int, list[BoxLike]]:
+    """Group tracker rows by frame index for framewise assignment."""
+
     tracks_by_frame: dict[int, list[BoxLike]] = defaultdict(list)
     for track in tracks:
         tracks_by_frame[track.frame_index].append(track)
@@ -202,6 +210,8 @@ def _frame_range(
     *,
     frame_count: int | None,
 ) -> list[int]:
+    """Return the evaluation timeline in frame order."""
+
     if frame_count is not None:
         return list(range(1, frame_count + 1))
 
@@ -271,8 +281,7 @@ def _calculate_idf1(
             prediction_index_by_id[association.prediction_id],
         ] += 1
 
-    # In this context the TP is the ID we matched to most often across the video
-    # We lock this ID mapping and count the frames that got it right
+    # IDTP comes from the best global one-to-one identity assignment.
     gt_indices, prediction_indices = linear_sum_assignment(-pair_counts)
     identity_true_positives = int(
         pair_counts[gt_indices, prediction_indices].sum()
@@ -290,6 +299,8 @@ def _calculate_trajectory_coverage(
     lifespan_frames_by_gt: dict[int, set[int]],
     matched_frames_by_gt: dict[int, set[int]],
 ) -> tuple[int, int]:
+    """Count GT trajectories tracked for >=80% or <20% of their lifespan."""
+
     mostly_tracked = 0
     mostly_lost = 0
     for gt_id, lifespan_frames in lifespan_frames_by_gt.items():
@@ -309,6 +320,8 @@ def _calculate_fragmentations(
     lifespan_frames_by_gt: dict[int, set[int]],
     matched_frames_by_gt: dict[int, set[int]],
 ) -> int:
+    """Count interrupted match coverage for each ground-truth trajectory."""
+
     fragmentations = 0
     for gt_id, lifespan_frames in lifespan_frames_by_gt.items():
         matched_frames = matched_frames_by_gt.get(gt_id, set())
@@ -325,6 +338,8 @@ def _calculate_fragmentations(
 
 
 def _safe_divide(numerator: float, denominator: float) -> float:
+    """Divide while returning zero for undefined empty-denominator cases."""
+
     if denominator == 0:
         return 0.0
     return numerator / denominator

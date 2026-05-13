@@ -54,6 +54,53 @@ By default, the script:
 
 For train sequences that include `gt/gt.txt`, the utility also writes `tracking_gt.mp4`. For test sequences, it prints a warning and skips that output.
 
+## Generating MOT17 Metrics
+
+The batch metrics utility scores every locally available MOT17 sequence under `data/MOT17/train` that contains:
+
+- `seqinfo.ini`
+- `det/det.txt`
+- `gt/gt.txt`
+
+The official MOT17 test split does not include local ground truth, so it cannot be scored by this offline utility.
+
+Run:
+
+```bash
+python -m src.utils.mot17_metrics
+```
+
+The command prints sequence-level progress and writes:
+
+- `data/metrics/MOT17_tracking_metrics.csv`
+
+The CSV contains:
+
+- one independent row per sequence, detector, and tracker
+- aggregate rows by detector/tracker combination
+- overall aggregate rows by tracker
+- frame counts, GT counts, prediction counts, match counts, and the MOT metrics used by the project
+
+Aggregate scores are recomputed from pooled tracks, not averaged from the independent per-sequence scores.
+
+## Plotting Saved Metrics
+
+Once `data/metrics/MOT17_tracking_metrics.csv` exists, generate aggregate detector/tracker plots with:
+
+```bash
+python -m src.utils.mot17_metrics_plots
+```
+
+The plotting utility reads the saved CSV report and writes:
+
+- `data/images/metrics/MOT17_tracking_metric_scores_by_detector.png`
+- `data/images/metrics/MOT17_tracking_metric_errors_by_detector.png`
+- `data/images/metrics/MOT17_tracking_mota_idf1_motp_bubbles.png`
+
+The bubble chart mirrors the MOTA-versus-IDF1 comparison style commonly used in MOT papers. Bubble area scales with `MOTP` here because this project does not compute `HOTA` yet.
+
+If the metrics CSV has not been generated yet, the plotting command tells you to run `python -m src.utils.mot17_metrics` first.
+
 ## Relevant Papers
 
 ### SORT (Baseline)
