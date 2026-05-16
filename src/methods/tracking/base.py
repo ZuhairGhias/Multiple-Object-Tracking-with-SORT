@@ -3,6 +3,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+import numpy as np
+
 from src.methods.detection import Detection
 
 
@@ -42,5 +44,6 @@ class Tracker(ABC):
         detections: list[Detection],
         *,
         frame_index: int,
+        frame: np.ndarray | None = None
     ) -> list[Track]:
         """Update tracker state from detections and return active tracks."""

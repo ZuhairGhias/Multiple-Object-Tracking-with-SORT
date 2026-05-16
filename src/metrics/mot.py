@@ -9,7 +9,7 @@ from typing import Iterable, Mapping
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-from src.metrics.matcher import BoxLike, match_by_iou
+from src.metrics.matcher import BoxLike, Match, iou, match_by_iou
 
 
 @dataclass(frozen=True)
@@ -70,6 +70,7 @@ def evaluate_mot_metrics(
     ground_truth_tracks: Iterable[BoxLike],
     predicted_tracks: Iterable[BoxLike],
     *,
+    ignored_tracks: Iterable[BoxLike] = (),
     iou_threshold: float = 0.5,
     frame_count: int | None = None,
 ) -> MOTMetrics:
@@ -83,6 +84,7 @@ def evaluate_mot_metrics(
 
     ground_truth_by_frame = _group_by_frame(ground_truth_tracks)
     predictions_by_frame = _group_by_frame(predicted_tracks)
+    ignored_by_frame = _group_by_frame(ignored_tracks)
     frames = _frame_range(
         ground_truth_by_frame,
         predictions_by_frame,
@@ -90,13 +92,14 @@ def evaluate_mot_metrics(
     )
 
     total_ground_truth = sum(len(items) for items in ground_truth_by_frame.values())
-    total_predictions = sum(len(items) for items in predictions_by_frame.values())
+    total_predictions = 0
     total_matches = 0
     total_iou = 0.0
     false_positives = 0
     false_negatives = 0
     id_switches = 0
     previous_prediction_by_gt: dict[int, int] = {}
+    previous_frame_prediction_by_gt: dict[int, int] = {}
     associations: list[FrameAssociation] = []
     matched_frames_by_gt: dict[int, set[int]] = defaultdict(set)
     lifespan_frames_by_gt: dict[int, set[int]] = defaultdict(set)
@@ -109,15 +112,28 @@ def evaluate_mot_metrics(
     for frame_index in frames:
         ground_truth = ground_truth_by_frame.get(frame_index, [])
         predictions = predictions_by_frame.get(frame_index, [])
-        frame_matches = match_by_iou(
+        frame_matches = _match_by_iou_with_continuity(
             ground_truth,
             predictions,
+            previous_frame_prediction_by_gt,
             iou_threshold=iou_threshold,
         )
+        matched_prediction_indices = {
+            match.prediction_index
+            for match in frame_matches
+        }
+        ignored_prediction_indices = _match_ignored_predictions(
+            ignored_by_frame.get(frame_index, []),
+            predictions,
+            matched_prediction_indices,
+            iou_threshold=iou_threshold,
+        )
+        evaluated_prediction_count = len(predictions) - len(ignored_prediction_indices)
 
+        total_predictions += evaluated_prediction_count
         total_matches += len(frame_matches)
         total_iou += sum(match.iou for match in frame_matches)
-        false_positives += len(predictions) - len(frame_matches)
+        false_positives += evaluated_prediction_count - len(frame_matches)
         false_negatives += len(ground_truth) - len(frame_matches)
 
         for match in frame_matches:
@@ -136,6 +152,10 @@ def evaluate_mot_metrics(
                 )
             )
             matched_frames_by_gt[gt.track_id].add(frame_index)
+        previous_frame_prediction_by_gt = {
+            ground_truth[match.ground_truth_index].track_id: predictions[match.prediction_index].track_id
+            for match in frame_matches
+        }
 
     mota = _safe_divide(
         total_ground_truth - false_negatives - false_positives - id_switches,
@@ -178,16 +198,19 @@ def compare_mot_metrics(
     ground_truth_tracks: Iterable[BoxLike],
     predictions_by_technique: Mapping[str, Iterable[BoxLike]],
     *,
+    ignored_tracks: Iterable[BoxLike] = (),
     iou_threshold: float = 0.5,
     frame_count: int | None = None,
 ) -> dict[str, MOTMetrics]:
     """Evaluate several tracker outputs against the same GT timeline."""
 
     ground_truth = list(ground_truth_tracks)
+    ignored = list(ignored_tracks)
     return {
         technique_name: evaluate_mot_metrics(
             ground_truth,
             predictions,
+            ignored_tracks=ignored,
             iou_threshold=iou_threshold,
             frame_count=frame_count,
         )
@@ -202,6 +225,131 @@ def _group_by_frame(tracks: Iterable[BoxLike]) -> dict[int, list[BoxLike]]:
     for track in tracks:
         tracks_by_frame[track.frame_index].append(track)
     return dict(tracks_by_frame)
+
+
+def _match_ignored_predictions(
+    ignored_regions: list[BoxLike],
+    predictions: list[BoxLike],
+    matched_prediction_indices: set[int],
+    *,
+    iou_threshold: float,
+) -> set[int]:
+    """Return unmatched prediction indices that overlap ignored GT regions."""
+
+    unmatched_prediction_indices = [
+        prediction_index
+        for prediction_index in range(len(predictions))
+        if prediction_index not in matched_prediction_indices
+    ]
+    if not ignored_regions or not unmatched_prediction_indices:
+        return set()
+
+    unmatched_predictions = [
+        predictions[prediction_index]
+        for prediction_index in unmatched_prediction_indices
+    ]
+    ignored_matches = match_by_iou(
+        ignored_regions,
+        unmatched_predictions,
+        iou_threshold=iou_threshold,
+    )
+    return {
+        unmatched_prediction_indices[match.prediction_index]
+        for match in ignored_matches
+    }
+
+
+def _match_by_iou_with_continuity(
+    ground_truth: list[BoxLike],
+    predictions: list[BoxLike],
+    previous_frame_prediction_by_gt: dict[int, int],
+    *,
+    iou_threshold: float,
+) -> list[Match]:
+    """Match one frame while preserving valid previous-frame assignments.
+
+    >>> from dataclasses import dataclass
+    >>> @dataclass
+    ... class Box:
+    ...     track_id: int
+    ...     frame_index: int
+    ...     box: tuple[float, float, float, float]
+    ...     def as_xyxy(self):
+    ...         return self.box
+    >>> gt = [Box(1, 2, (0, 0, 10, 10)), Box(2, 2, (8, 0, 18, 10))]
+    >>> pred = [Box(10, 2, (7, 0, 17, 10)), Box(11, 2, (1, 0, 11, 10))]
+    >>> matches = _match_by_iou_with_continuity(
+    ...     gt,
+    ...     pred,
+    ...     {1: 10, 2: 11},
+    ...     iou_threshold=0.1,
+    ... )
+    >>> [(gt[m.ground_truth_index].track_id, pred[m.prediction_index].track_id) for m in matches]
+    [(1, 10), (2, 11)]
+    """
+
+    if not ground_truth or not predictions:
+        return []
+
+    gt_index_by_id = {
+        gt.track_id: gt_index
+        for gt_index, gt in enumerate(ground_truth)
+    }
+    prediction_index_by_id = {}
+    for prediction_index, prediction in enumerate(predictions):
+        prediction_index_by_id.setdefault(prediction.track_id, prediction_index)
+
+    matches: list[Match] = []
+    matched_gt_indices: set[int] = set()
+    matched_prediction_indices: set[int] = set()
+
+    for gt_id, prediction_id in previous_frame_prediction_by_gt.items():
+        gt_index = gt_index_by_id.get(gt_id)
+        prediction_index = prediction_index_by_id.get(prediction_id)
+        if gt_index is None or prediction_index is None:
+            continue
+
+        match_iou = iou(
+            ground_truth[gt_index].as_xyxy(),
+            predictions[prediction_index].as_xyxy(),
+        )
+        if match_iou < iou_threshold:
+            continue
+
+        matches.append(
+            Match(
+                ground_truth_index=gt_index,
+                prediction_index=prediction_index,
+                iou=match_iou,
+            )
+        )
+        matched_gt_indices.add(gt_index)
+        matched_prediction_indices.add(prediction_index)
+
+    remaining_gt_indices = [
+        gt_index
+        for gt_index in range(len(ground_truth))
+        if gt_index not in matched_gt_indices
+    ]
+    remaining_prediction_indices = [
+        prediction_index
+        for prediction_index in range(len(predictions))
+        if prediction_index not in matched_prediction_indices
+    ]
+    remaining_matches = match_by_iou(
+        [ground_truth[gt_index] for gt_index in remaining_gt_indices],
+        [predictions[prediction_index] for prediction_index in remaining_prediction_indices],
+        iou_threshold=iou_threshold,
+    )
+    matches.extend(
+        Match(
+            ground_truth_index=remaining_gt_indices[match.ground_truth_index],
+            prediction_index=remaining_prediction_indices[match.prediction_index],
+            iou=match.iou,
+        )
+        for match in remaining_matches
+    )
+    return matches
 
 
 def _frame_range(

@@ -8,7 +8,7 @@ from .base import Detection, Detector
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MOT17_DIR = PROJECT_ROOT / "data" / "MOT17"
-DEFAULT_MIN_SCORE: float | None = None
+DEFAULT_MIN_SCORE: float | None = 0.0
 
 
 @dataclass
@@ -17,7 +17,7 @@ class MOT17Detector(Detector):
 
     sequence_id: str
     root_dir: str | Path | None = None
-    min_score: float | None = field(default=DEFAULT_MIN_SCORE, init=False)
+    min_score: float | None = DEFAULT_MIN_SCORE
     _detections_by_frame: dict[int, list[Detection]] = field(
         default_factory=dict,
         init=False,

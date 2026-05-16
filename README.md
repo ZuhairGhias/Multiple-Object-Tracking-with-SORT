@@ -5,64 +5,90 @@ sdk_version: 6.12.0
 app_file: app.py
 python_version: 3.11
 fullWidth: true
-short_description: Interactive SORT demo for MOT17 tracking visualizations.
+short_description: MOT17 demo comparing SORT and DeepSORT trackers.
 tags:
   - computer-vision
   - object-tracking
   - gradio
 ---
 
-# Multiple-Object-Tracking-with-SORT
+# Multiple Object Tracking with SORT and DeepSORT
 
-This project implements the SORT (Simple Online and Realtime Tracking) algorithm and provides an interactive demo for visualizing object tracking behavior.
+**Author:** Zuhair Ghias
 
-## Features
-- SORT tracker implementation
-- Video-based object tracking
-- Interactive demo (Gradio)
-- Visualization of track IDs and trajectories
+**Email:** zuhairg2@illinois.edu
+
+**Source code:** https://github.com/ZuhairGhias/Multiple-Object-Tracking-with-SORT
+
+**Demo:** https://huggingface.co/spaces/zghias/Multiple-Object-Tracking-with-SORT
+
+This project is an interactive technical demo for multiple object tracking on MOT17. It compares a progression of
+tracking-by-detection methods:
+
+- Naive IoU association
+- SORT
+- DeepSORT
+- MyDeepSORT2, a lightweight DeepSORT variant using HSV color histograms and IoU-gated association
+
+The Gradio app includes curated `MOT17-09-SDP` videos, metric plots, runtime plots, and a written report explaining the
+methods and tradeoffs.
 
 ## Demo
-Launch the Gradio demo to play the sample MOT17 video.
 
-## Setup
+Run the app locally:
 
 ```bash
 pip install -r requirements.txt
 python app.py
 ```
 
-## Generating Demo Videos From MOT17
+The app opens at a local Gradio URL. The demo videos are stored under:
 
-The repository keeps curated demo MP4s in `data/videos/`, but it does not need the extracted MOT17 frame folders checked in. Regenerated local videos are written to `data/videos/temp/`, which is ignored by git.
-
-To build source and detections MP4s from an original MOT17 sequence that you have locally:
-
-1. Download and extract the MOT17 dataset outside the repository.
-2. Pick a sequence root that contains `img1/`, `seqinfo.ini`, and `det/det.txt`, for example `~/datasets/MOT17/train/MOT17-01-DPM`.
-3. Run the MOT17 utility against that sequence root:
-
-```bash
-python -m src.utils.mot17 ~/datasets/MOT17/train/MOT17-01-DPM
+```text
+data/videos/MOT17-09-SDP/
 ```
 
-By default, the script:
-- reads the frame rate from `seqinfo.ini`
-- writes `data/videos/temp/MOT17-01-DPM/source.mp4`
-- writes `data/videos/temp/MOT17-01-DPM/detections.mp4`
-- uses ffmpeg/libx264 for MP4 output when available
+Included videos:
 
-For train sequences that include `gt/gt.txt`, the utility also writes `tracking_gt.mp4`. For test sequences, it prints a warning and skips that output.
+- `source.mp4`
+- `detections.mp4`
+- `tracking_naive_iou.mp4`
+- `tracking_sort.mp4`
+- `tracking_deep_sort.mp4`
+- `tracking_my_deep_sort2.mp4`
+- `tracking_gt.mp4`
+
+## Project Structure
+
+Core source code:
+
+- `src/methods/tracking/SORT.py`: SORT implementation
+- `src/methods/tracking/deep_SORT.py`: DeepSORT implementation and shared DeepSORT helpers
+- `src/methods/tracking/MyDeepSORT2.py`: lightweight color-histogram DeepSORT variant
+- `src/metrics/`: MOT metric calculation helpers
+- `src/utils/mot17.py`: MOT17 video generation utility
+- `src/utils/mot17_metrics.py`: MOT17 metrics pipeline
+- `src/utils/mot17_metrics_plots.py`: static plot and table generation
+- `app.py`: Gradio demo and written report
+
+## Generating Demo Videos
+
+The committed demo uses `MOT17-09-SDP`. To regenerate those videos from a local MOT17 checkout:
+
+```bash
+python -m src.utils.mot17 MOT17-09-SDP --output-dir data/videos
+```
+
+The video utility writes source, detections, ground truth, Naive IoU, SORT, DeepSORT, and MyDeepSORT2 MP4s. It uses
+H.264 output when `imageio-ffmpeg` is installed, which improves browser playback in Gradio.
 
 ## Generating MOT17 Metrics
 
-The batch metrics utility scores every locally available MOT17 sequence under `data/MOT17/train` that contains:
+The metrics utility scores every locally available MOT17 training sequence under `data/MOT17/train` that contains:
 
 - `seqinfo.ini`
 - `det/det.txt`
 - `gt/gt.txt`
-
-The official MOT17 test split does not include local ground truth, so it cannot be scored by this offline utility.
 
 Run:
 
@@ -70,63 +96,52 @@ Run:
 python -m src.utils.mot17_metrics
 ```
 
-The command prints sequence-level progress and writes:
+The command writes:
 
-- `data/metrics/MOT17_tracking_metrics.csv`
+```text
+data/metrics/MOT17_tracking_metrics.csv
+```
 
-The CSV contains:
+The CSV contains independent sequence rows, detector/tracker aggregate rows, overall aggregate rows, frame counts,
+prediction counts, runtime fields, and standard MOT metrics such as MOTA, MOTP, IDF1, FP, FN, ID switches, and
+fragmentations.
 
-- one independent row per sequence, detector, and tracker
-- aggregate rows by detector/tracker combination
-- overall aggregate rows by tracker
-- frame counts, GT counts, prediction counts, match counts, and the MOT metrics used by the project
+## Plotting Metrics
 
-Aggregate scores are recomputed from pooled tracks, not averaged from the independent per-sequence scores.
-
-## Plotting Saved Metrics
-
-Once `data/metrics/MOT17_tracking_metrics.csv` exists, generate aggregate detector/tracker plots with:
+Generate the report plots from the saved CSV:
 
 ```bash
 python -m src.utils.mot17_metrics_plots
 ```
 
-The plotting utility reads the saved CSV report and writes:
+The app currently uses the full comparison plots for:
 
-- `data/images/metrics/MOT17_tracking_metric_scores_by_detector.png`
-- `data/images/metrics/MOT17_tracking_metric_errors_by_detector.png`
-- `data/images/metrics/MOT17_tracking_mota_idf1_motp_bubbles.png`
+- Naive IoU
+- SORT
+- DeepSORT
+- MyDeepSORT2
 
-The bubble chart mirrors the MOTA-versus-IDF1 comparison style commonly used in MOT papers. Bubble area scales with `MOTP` here because this project does not compute `HOTA` yet.
+The plot filenames follow this convention:
 
-If the metrics CSV has not been generated yet, the plotting command tells you to run `python -m src.utils.mot17_metrics` first.
+```text
+MOT17_tracking_trackers-{trackers}_detectors-{detectors}_{plot_name}.png
+```
+
+You can generate smaller comparison plots with filters:
+
+```bash
+python -m src.utils.mot17_metrics_plots --trackers naive_iou,sort
+python -m src.utils.mot17_metrics_plots --trackers naive_iou,sort,deep_sort --detectors SDP
+```
 
 ## Relevant Papers
 
-### SORT (Baseline)
-- **Simple Online and Realtime Tracking (SORT)**  
-  Bewley et al., 2016  
-  https://arxiv.org/abs/1602.00763  
-  - Introduces a lightweight tracking-by-detection framework  
-  - Uses Kalman filtering + Hungarian algorithm + IoU matching  
-  - Focuses on real-time performance
+- Bewley et al., "Simple Online and Realtime Tracking", 2016. https://arxiv.org/abs/1602.00763
+- Wojke et al., "Simple Online and Realtime Tracking with a Deep Association Metric", 2017. https://arxiv.org/abs/1703.07402
+- Du et al., "StrongSORT: Make DeepSORT Great Again", 2022. https://arxiv.org/abs/2202.13514
 
----
+## AI Use Policy
 
-### DeepSORT (Appearance Modeling)
-- **Simple Online and Realtime Tracking with a Deep Association Metric (DeepSORT)**  
-  Wojke et al., 2017  
-  https://arxiv.org/abs/1703.07402  
-  - Extends SORT with deep appearance embeddings  
-  - Improves robustness to occlusions and re-identification  
-  - Combines motion + appearance for association
-
----
-
-### StrongSORT (Modern Improvements)
-- **StrongSORT: Make DeepSORT Great Again**  
-  Du et al., 2022  
-  https://arxiv.org/abs/2202.13514  
-  - Improves DeepSORT with multiple plug-and-play upgrades  
-  - Better motion modeling, appearance features, and matching  
-  - Strong performance on modern MOT benchmarks
+I worked on the core tracker implementations and evaluation logic. I used AI assistance for brainstorming, utility code,
+automation, the evaluation framework, debugging, cleanup, and generating repeatable plots and videos. I reviewed and
+integrated the changes myself.

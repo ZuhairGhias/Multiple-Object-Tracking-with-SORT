@@ -9,7 +9,7 @@ import warnings
 import cv2
 
 from src.methods.detection import MOT17Detector
-from src.methods.tracking import MOTGroundTruthTracker, NaiveIOUTracker, SORT, Tracker
+from src.methods.tracking import DeepSORT, MOTGroundTruthTracker, MyDeepSORT2, NaiveIOUTracker, SORT, Tracker
 from src.utils.frames2mp4 import MP4Writer
 from src.utils.render import render_detections, render_tracks
 
@@ -20,6 +20,8 @@ DEFAULT_VIDEO_DIR = PROJECT_ROOT / "data" / "videos" / "temp"
 TRACKING_VIDEO_FILENAMES = {
     "naive_iou": "tracking_naive_iou.mp4",
     "sort": "tracking_sort.mp4",
+    "deep_sort": "tracking_deep_sort.mp4",
+    "my_deep_sort2": "tracking_my_deep_sort2.mp4",
     "mot_ground_truth": "tracking_gt.mp4",
 }
 
@@ -30,6 +32,8 @@ class MOT17VideoOutputs:
     detections_video_path: Path
     tracking_naive_iou_video_path: Path
     tracking_sort_video_path: Path
+    tracking_deep_sort_video_path: Path
+    tracking_my_deep_sort2_video_path: Path
     tracking_gt_video_path: Path | None = None
 
 
@@ -94,6 +98,8 @@ def generate_mot17_videos(
     tracking_gt_video_path = sequence_output_dir / TRACKING_VIDEO_FILENAMES["mot_ground_truth"]
     tracking_naive_iou_video_path = sequence_output_dir / TRACKING_VIDEO_FILENAMES["naive_iou"]
     tracking_sort_video_path = sequence_output_dir / TRACKING_VIDEO_FILENAMES["sort"]
+    tracking_deep_sort_video_path = sequence_output_dir / TRACKING_VIDEO_FILENAMES["deep_sort"]
+    tracking_my_deep_sort2_video_path = sequence_output_dir / TRACKING_VIDEO_FILENAMES["my_deep_sort2"]
 
     fps = infer_mot17_frame_rate(resolved_sequence_dir)
     detector = MOT17Detector(sequence_id=sequence_id, root_dir=resolved_sequence_dir.parent)
@@ -101,6 +107,8 @@ def generate_mot17_videos(
     trackers: dict[str, Tracker] = {
         "naive_iou": NaiveIOUTracker(),
         "sort": SORT(),
+        "deep_sort": DeepSORT(),
+        "my_deep_sort2": MyDeepSORT2(),
     }
     gt_path = resolved_sequence_dir / "gt" / "gt.txt"
     if gt_path.is_file():
@@ -119,6 +127,8 @@ def generate_mot17_videos(
     tracker_output_paths = {
         "naive_iou": tracking_naive_iou_video_path,
         "sort": tracking_sort_video_path,
+        "deep_sort": tracking_deep_sort_video_path,
+        "my_deep_sort2": tracking_my_deep_sort2_video_path,
         "mot_ground_truth": tracking_gt_video_path,
     }
     tracker_writers = {
@@ -142,7 +152,10 @@ def generate_mot17_videos(
             detections_writer.add_frame(render_detections(frame, detections))
 
             for name, tracker in trackers.items():
-                tracks = tracker.update(detections, frame_index=frame_index)
+                if name in {"deep_sort", "my_deep_sort2"}:
+                    tracks = tracker.update(detections, frame_index=frame_index, frame=frame)
+                else:
+                    tracks = tracker.update(detections, frame_index=frame_index)
                 tracker_writers[name].add_frame(render_tracks(frame, tracks))
     finally:
         source_writer.close()
@@ -155,6 +168,8 @@ def generate_mot17_videos(
         detections_video_path=detections_video_path,
         tracking_naive_iou_video_path=tracking_naive_iou_video_path,
         tracking_sort_video_path=tracking_sort_video_path,
+        tracking_deep_sort_video_path=tracking_deep_sort_video_path,
+        tracking_my_deep_sort2_video_path=tracking_my_deep_sort2_video_path,
         tracking_gt_video_path=tracking_gt_video_path if "mot_ground_truth" in trackers else None,
     )
 
@@ -186,6 +201,8 @@ def main() -> None:
     print(f"detections={outputs.detections_video_path}")
     print(f"tracking_naive_iou={outputs.tracking_naive_iou_video_path}")
     print(f"tracking_sort={outputs.tracking_sort_video_path}")
+    print(f"tracking_deep_sort={outputs.tracking_deep_sort_video_path}")
+    print(f"tracking_my_deep_sort2={outputs.tracking_my_deep_sort2_video_path}")
     if outputs.tracking_gt_video_path is not None:
         print(f"tracking_gt={outputs.tracking_gt_video_path}")
 

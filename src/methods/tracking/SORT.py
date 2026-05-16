@@ -1,24 +1,37 @@
+"""SORT tracker aligned with the original paper/reference implementation."""
+
 from __future__ import annotations
-from dataclasses import dataclass
 
 from filterpy.kalman import KalmanFilter
-
-from .base import Track, Tracker
-from src.methods.detection import Detection
-from scipy.optimize import linear_sum_assignment
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 
-@dataclass
-class _KalmanTrack:
+from src.methods.detection import Detection
+from src.methods.tracking.base import Track, Tracker
+
+
+SORT_MAX_AGE = 1
+SORT_MIN_HITS = 3
+SORT_IOU_THRESHOLD = 0.3
+
+
+class _SortTrack:
+    """Internal SORT track state.
+
+    SORT uses a seven-dimensional constant-velocity Kalman state:
+    `(u, v, s, r, du, dv, ds)`, where `u/v` are box center coordinates,
+    `s` is area, and `r` is aspect ratio. The reference implementation keeps
+    aspect ratio fixed and only predicts center and scale velocity.
+    """
+
     def __init__(self, detection: Detection, track_id: int):
         self.track_id = track_id
-        self.hits = 1
+        self.hits = 0
+        self.hit_streak = 0
         self.age = 0
         self.time_since_update = 0
 
-        self.kf = KalmanFilter(dim_x=7, dim_z=4) #TODO implement manually for better understanding
-
-        # Motion model
+        self.kf = KalmanFilter(dim_x=7, dim_z=4)
         self.kf.F = np.array([
             [1, 0, 0, 0, 1, 0, 0],
             [0, 1, 0, 0, 0, 1, 0],
@@ -28,33 +41,37 @@ class _KalmanTrack:
             [0, 0, 0, 0, 0, 1, 0],
             [0, 0, 0, 0, 0, 0, 1],
         ])
-
-        # Measurement model
         self.kf.H = np.array([
             [1, 0, 0, 0, 0, 0, 0],
             [0, 1, 0, 0, 0, 0, 0],
             [0, 0, 1, 0, 0, 0, 0],
             [0, 0, 0, 1, 0, 0, 0],
         ])
+        self.kf.R[2:, 2:] *= 10.0
+        self.kf.P[4:, 4:] *= 1000.0
+        self.kf.P *= 10.0
+        self.kf.Q[-1, -1] *= 0.01
+        self.kf.Q[4:, 4:] *= 0.01
+        self.kf.x[:4] = xyxy_to_sort_z(detection.as_xyxy())
 
-        # Initialize state with the first detection
-        self.kf.x[:4] = self.xyxy_to_z(detection.as_xyxy())
-
-
-    
-    def predict_xyxy(self) -> tuple[float, float, float, float]:
+    def predict(self) -> tuple[float, float, float, float]:
+        if self.kf.x[6] + self.kf.x[2] <= 0:
+            self.kf.x[6] *= 0.0
         self.kf.predict()
         self.age += 1
+        if self.time_since_update > 0:
+            self.hit_streak = 0
         self.time_since_update += 1
-        return self.x_to_xyxy(self.kf.x)
+        return sort_x_to_xyxy(self.kf.x)
 
     def update(self, detection: Detection) -> None:
         self.time_since_update = 0
         self.hits += 1
-        self.kf.update(self.xyxy_to_z(detection.as_xyxy()))
+        self.hit_streak += 1
+        self.kf.update(xyxy_to_sort_z(detection.as_xyxy()))
 
     def to_track(self, frame_index: int) -> Track:
-        x1, y1, x2, y2 = self.x_to_xyxy(self.kf.x)
+        x1, y1, x2, y2 = sort_x_to_xyxy(self.kf.x)
         return Track(
             track_id=self.track_id,
             frame_index=frame_index,
@@ -65,53 +82,43 @@ class _KalmanTrack:
             score=None,
         )
 
-    def x_to_xyxy(self, x: np.ndarray) -> tuple[float, float, float, float]:
-        u, v, s, r = x[:4].reshape(-1)
-
-        if s <= 0:
-            s = 1e-6
-        if r <= 0:
-            r = 1e-6
-
-        width = np.sqrt(s * r)
-        height = s / width
-
-        x1 = u - width / 2
-        y1 = v - height / 2
-        x2 = u + width / 2
-        y2 = v + height / 2
-
-        return (float(x1), float(y1), float(x2), float(y2))
-
-
-    def xyxy_to_z(self, box: tuple[float, float, float, float]) -> np.ndarray:
-        x1, y1, x2, y2 = box
-
-        width = x2 - x1
-        height = y2 - y1
-
-        if height <= 0:
-            height = 1e-6
-
-        u = x1 + width / 2
-        v = y1 + height / 2
-        s = width * height
-        r = width / height
-
-        return np.array([u, v, s, r]).reshape((4, 1))
-    
-
-
 
 class SORT(Tracker):
-    """A simple SORT tracker implementation."""
+    """SORT tracker using Kalman prediction and IoU/Hungarian association.
 
-    def __init__(self):
+    This class intentionally follows the original SORT lifecycle: predictions
+    can remain alive briefly for future association, but only tracks updated in
+    the current frame are emitted. New tracks are emitted during the initial
+    warm-up frames; afterward they must reach `min_hits` consecutive matches.
+
+    >>> tracker = SORT()
+    >>> detection = Detection(frame_index=1, x1=0, y1=0, x2=10, y2=10)
+    >>> len(tracker.update([detection], frame_index=1))
+    1
+    >>> tracker.update([], frame_index=2)
+    []
+    >>> len(tracker.current_tracks)
+    1
+    >>> tracker.update([], frame_index=3)
+    []
+    >>> len(tracker.current_tracks)
+    0
+    """
+
+    def __init__(
+        self,
+        *,
+        max_age: int = SORT_MAX_AGE,
+        min_hits: int = SORT_MIN_HITS,
+        iou_threshold: float = SORT_IOU_THRESHOLD,
+    ):
         super().__init__()
-        self.iou_threshold = 0.3
+        self.max_age = max_age
+        self.min_hits = min_hits
+        self.iou_threshold = iou_threshold
+        self.frame_count = 0
         self.next_track_id = 1
-        self.current_tracks: list[_KalmanTrack] = []
-        self.max_age = 5
+        self.current_tracks: list[_SortTrack] = []
 
     def update(
         self,
@@ -119,128 +126,158 @@ class SORT(Tracker):
         *,
         frame_index: int,
     ) -> list[Track]:
+        self.frame_count += 1
+        predicted_boxes, invalid_track_indices = self.predict_tracks()
+        for track_index in reversed(invalid_track_indices):
+            self.current_tracks.pop(track_index)
 
-        """
-        Prediction said: “I think the object is here.”
-        Detection says: “I measured the object over here.”
-        Kalman update combines both, weighted by uncertainty.
+        matches, _, unmatched_detections = match_sort_detections(
+            predicted_boxes,
+            detections,
+            iou_threshold=self.iou_threshold,
+        )
 
-        :param self: Description
-        :param detections: Description
-        :type detections: list[Detection]
-        :param frame_index: Description
-        :type frame_index: int
-        :return: Description
-        :rtype: list[Track]
-        """
-        
-        matches, _, unmatched_detections = self.match_detections(self.current_tracks, detections)
+        for track_index, detection_index in matches:
+            self.current_tracks[track_index].update(detections[detection_index])
 
-        # update kalman filters for matched tracks
-        for track_idx, detection_idx in matches:
-            self.current_tracks[track_idx].update(detections[detection_idx])
-
-        # create new tracks for unmatched detections
-        for detection_idx in unmatched_detections:
+        for detection_index in unmatched_detections:
             self.current_tracks.append(
-                _KalmanTrack(
-                    detection=detections[detection_idx],
+                _SortTrack(
+                    detection=detections[detection_index],
                     track_id=self.next_track_id,
                 )
             )
             self.next_track_id += 1
 
-        # remove old tracks that haven't been matched for a while
+        output_tracks = [
+            track.to_track(frame_index)
+            for track in self.current_tracks
+            if (
+                track.time_since_update < 1
+                and (
+                    track.hit_streak >= self.min_hits
+                    or self.frame_count <= self.min_hits
+                )
+            )
+        ]
         self.current_tracks = [
-            tracker
-            for tracker in self.current_tracks
-            if tracker.time_since_update <= self.max_age
+            track
+            for track in self.current_tracks
+            if track.time_since_update <= self.max_age
         ]
+        return output_tracks
 
-        return [
-            tracker.to_track(frame_index)
-            for tracker in self.current_tracks
-        ]
+    def predict_tracks(self) -> tuple[list[tuple[float, float, float, float]], list[int]]:
+        predicted_boxes = []
+        invalid_track_indices = []
+        for track_index, track in enumerate(self.current_tracks):
+            predicted_box = track.predict()
+            if not np.isfinite(predicted_box).all():
+                invalid_track_indices.append(track_index)
+                continue
+            predicted_boxes.append(predicted_box)
+        return predicted_boxes, invalid_track_indices
 
-    def match_detections(self, tracks: list[_KalmanTrack], detections: list[Detection]) -> list[tuple[int, int]]:
 
-        # need to update predictions every time
-        predicted_boxes = [
-            track.predict_xyxy()
-            for track in tracks
-        ]
-        
-        # then decide if we should quit early
-        if len(tracks) == 0 or len(detections) == 0:
-            return [], list(range(len(tracks))), list(range(len(detections)))
+def match_sort_detections(
+    predicted_boxes: list[tuple[float, float, float, float]],
+    detections: list[Detection],
+    *,
+    iou_threshold: float,
+) -> tuple[list[tuple[int, int]], list[int], list[int]]:
+    """Match SORT predictions to detections using IoU and Hungarian assignment.
 
-        # proceed with the matching
-        cost_matrix = np.ones((len(tracks), len(detections)), dtype=np.float32)
-
-        for i, predicted_box in enumerate(predicted_boxes):
-            for j, det in enumerate(detections):
-                cost_matrix[i, j] = 1 - IOU(predicted_box, det.as_xyxy())
-
-        row_indices, col_indices = linear_sum_assignment(cost_matrix) #TODO implement manually for better understanding
-
-        matches = []
-        unmatched_tracks = set(range(len(tracks)))
-        unmatched_detections = set(range(len(detections)))
-        for row, col in zip(row_indices, col_indices):
-            if cost_matrix[row, col] < 1 - self.iou_threshold:
-                matches.append((row, col))
-                unmatched_tracks.discard(row)
-                unmatched_detections.discard(col)
-
-        return matches, list(unmatched_tracks), list(unmatched_detections)
-
-# TODO: put int common place
-def IOU(boxA, boxB):
+    >>> detections = [Detection(frame_index=1, x1=0, y1=0, x2=10, y2=10)]
+    >>> match_sort_detections([(0, 0, 10, 10)], detections, iou_threshold=0.3)
+    ([(0, 0)], [], [])
     """
-    Docstring for IOU
-    
-    :param boxA: a tuple of (x1, y1, x2, y2) for the first box
-    :param boxB: a tuple of (x1, y1, x2, y2) for the second box
+
+    if len(predicted_boxes) == 0 or len(detections) == 0:
+        return [], list(range(len(predicted_boxes))), list(range(len(detections)))
+
+    cost_matrix = np.ones((len(predicted_boxes), len(detections)), dtype=np.float32)
+    for track_index, predicted_box in enumerate(predicted_boxes):
+        for detection_index, detection in enumerate(detections):
+            cost_matrix[track_index, detection_index] = 1 - box_iou(
+                predicted_box,
+                detection.as_xyxy(),
+            )
+
+    row_indices, col_indices = linear_sum_assignment(cost_matrix)
+
+    matches = []
+    unmatched_tracks = set(range(len(predicted_boxes)))
+    unmatched_detections = set(range(len(detections)))
+    for row, col in zip(row_indices, col_indices):
+        if cost_matrix[row, col] <= 1 - iou_threshold:
+            matches.append((int(row), int(col)))
+            unmatched_tracks.discard(row)
+            unmatched_detections.discard(col)
+
+    return matches, list(unmatched_tracks), list(unmatched_detections)
+
+
+def xyxy_to_sort_z(box: tuple[float, float, float, float]) -> np.ndarray:
+    """Convert `(x1, y1, x2, y2)` into SORT's `(u, v, s, r)` measurement.
+
+    >>> xyxy_to_sort_z((0, 0, 10, 20)).reshape(-1).tolist()
+    [5.0, 10.0, 200.0, 0.5]
     """
-    interArea = Intersection(boxA, boxB)
 
-    unionArea = Union(boxA, boxB, interArea)
+    x1, y1, x2, y2 = box
+    width = x2 - x1
+    height = y2 - y1
+    if height <= 0:
+        height = 1e-6
+    u = x1 + width / 2
+    v = y1 + height / 2
+    scale = width * height
+    ratio = width / height
+    return np.array([u, v, scale, ratio]).reshape((4, 1))
 
-    iou = interArea / unionArea if unionArea > 0 else 0
 
-    return iou
+def sort_x_to_xyxy(state: np.ndarray) -> tuple[float, float, float, float]:
+    """Convert SORT's Kalman state into `(x1, y1, x2, y2)`.
 
-
-def Union(boxA, boxB, interArea = None):
+    >>> sort_x_to_xyxy(np.array([5, 10, 200, 0.5, 0, 0, 0]))
+    (0.0, 0.0, 10.0, 20.0)
     """
-    Docstring for Union
-    
-    :param boxA: a tuple of (x1, y1, x2, y2) for the first box
-    :param boxB: a tuple of (x1, y1, x2, y2) for the second box
-    :param interArea: the precomputer intersection area of the two boxes
+
+    u, v, scale, ratio = state[:4].reshape(-1)
+    if scale <= 0:
+        scale = 1e-6
+    if ratio <= 0:
+        ratio = 1e-6
+
+    width = np.sqrt(scale * ratio)
+    height = scale / width
+    return (
+        float(u - width / 2),
+        float(v - height / 2),
+        float(u + width / 2),
+        float(v + height / 2),
+    )
+
+
+def box_iou(
+    first_box: tuple[float, float, float, float],
+    second_box: tuple[float, float, float, float],
+) -> float:
+    """Return intersection-over-union for two `(x1, y1, x2, y2)` boxes.
+
+    >>> box_iou((0, 0, 10, 10), (5, 5, 15, 15))
+    0.14285714285714285
     """
-    areaA = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
-    areaB = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
 
-    if interArea is None:
-        interArea = Intersection(boxA, boxB)
+    x1 = max(first_box[0], second_box[0])
+    y1 = max(first_box[1], second_box[1])
+    x2 = min(first_box[2], second_box[2])
+    y2 = min(first_box[3], second_box[3])
+    intersection = max(0, x2 - x1) * max(0, y2 - y1)
 
-    unionArea = areaA + areaB - interArea
-
-    return unionArea
-
-def Intersection(boxA, boxB):
-    """
-    Docstring for Intersection
-    
-    :param boxA: a tuple of (x1, y1, x2, y2) for the first box
-    :param boxB: a tuple of (x1, y1, x2, y2) for the second box
-    """
-    xA = max(boxA[0], boxB[0])
-    yA = max(boxA[1], boxB[1])
-    xB = min(boxA[2], boxB[2])
-    yB = min(boxA[3], boxB[3])
-
-    interArea = max(0, xB - xA) * max(0, yB - yA)
-
-    return interArea
+    first_area = (first_box[2] - first_box[0]) * (first_box[3] - first_box[1])
+    second_area = (second_box[2] - second_box[0]) * (second_box[3] - second_box[1])
+    union = first_area + second_area - intersection
+    if union <= 0:
+        return 0.0
+    return intersection / union
